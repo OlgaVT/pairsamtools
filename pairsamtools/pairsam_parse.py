@@ -30,8 +30,8 @@ EXTRA_COLUMNS = [
     'dist_to_3',
     'rfrag',
     'rfrag_dist',
-    'rfrag_dist_5',
-    'rfrag_dist_3'
+    'rfrag_dist_up',
+    'rfrag_dist_down'
 ]
 
 @cli.command()
@@ -296,9 +296,7 @@ def empty_alignment():
         'clip5_ref': 0, 
         'read_len': 0,
         'type':'N'
-
     }
-
 
 def parse_algn(samcols, min_mapq, report_3_alignment_end=False):
     is_mapped = (int(samcols[1]) & 0x04) == 0
@@ -308,7 +306,7 @@ def parse_algn(samcols, min_mapq, report_3_alignment_end=False):
 
     cigar = parse_cigar(samcols[5])
 
-    if is_mapped: 
+    if is_mapped:
         if ((int(samcols[1]) & 0x10) == 0):
             strand = '+'
             dist_to_5 = cigar['clip5_ref']
@@ -319,7 +317,7 @@ def parse_algn(samcols, min_mapq, report_3_alignment_end=False):
             dist_to_3 = cigar['clip5_ref']
 
         if is_unique:
-            chrom = samcols[2] 
+            chrom = samcols[2]
             if strand == '+':
                 pos5 = int(samcols[3])
                 pos3 = int(samcols[3]) + cigar['algn_ref_span']
@@ -500,8 +498,8 @@ def _mask_alignment(algn):
 
     algn['rfrag'] = -1
     algn['rfrag_dist'] = -1
-    algn['rfrag_dist_3'] = -1
-    algn['rfrag_dist_5'] = -1
+    algn['rfrag_dist_up'] = -1
+    algn['rfrag_dist_down'] = -1
 
     return algn
 
@@ -916,6 +914,72 @@ def parse_alternative_algns(samcols):
 #
 #    return supp_algns
 
+def find_rfrag(rfrags, chrom, pos):
+    if chrom.encode('ascii') in rfrags.keys():
+        rsites_chrom = rfrags[chrom.encode('ascii')]['end']
+        rsites_idx = rfrags[chrom.encode('ascii')]['idx']
+        idx = min(max(0, rsites_chrom.searchsorted(pos, 'right') - 1), len(rsites_chrom) - 2)
+        return rsites_idx[idx], rsites_chrom[idx], rsites_chrom[idx + 1]
+    else:
+        return -1, -1, -1
+
+def rescue_pair(algn1, algn2, type, rfrags=None, gap_limit=0, dist_rsite=10):
+    """
+    Rescue particular pair of sequential alignments
+    :param algn1:   First alignment
+    :param algn2:   Second alignment
+    :param type:    Type of alignment: J - sequential in one read, algn1 is left, algn2 is right, rrags are checked
+                                       P - ending alignments in R1 and R2, no need to check rfrags
+    :param rfrags:  rfrags to find positions for "J" case
+    :param gap_limit:   Not checked if 0 or if type=="H". 
+                        Otherwise, check the possibility of fitting some other alignement in between.
+    :return: Rescued pair
+    """
+    
+    algn1 = copy.deepcopy(algn1)
+    algn2 = copy.deepcopy(algn2)
+    
+    if (algn1['is_mapped'] and algn1['is_unique'] and algn2['is_mapped'] and algn2['is_unique']):
+
+        rfrag1, dist1_up, dist1_down = \
+            find_rfrag(rfrags, algn1['chrom'], algn1['pos3'] + (-10 if algn1['strand'] == "+" else 10))
+        rfrag2, dist2_up, dist2_down = \
+            find_rfrag(rfrags, algn2['chrom'], algn2['pos5'] + (10 if algn2['strand'] == "+" else -10))
+
+        dist_to_rfrag1 = min(abs(dist1_up - algn1['pos3']),
+                             abs(dist1_down - algn1['pos3']))
+        dist_to_rfrag2 = min(abs(dist2_up - algn2['pos5']),
+                             abs(dist2_down - algn2['pos5']))
+        if type == 'J':
+
+            if dist_to_rfrag1 > dist_rsite or dist_to_rfrag2 > dist_rsite:
+                algn1['type'] = 'H'  # hop
+                algn2['type'] = 'H'
+            else:
+                algn1['type'] = 'J'  # junction
+                algn2['type'] = 'J'
+
+        else:
+            algn1['type'] = 'P'  # pair
+            algn2['type'] = 'P'
+
+        algn1['rfrag'],         algn2['rfrag']          = rfrag1, rfrag2
+        algn1['rfrag_dist'],    algn2['rfrag_dist']     = dist_to_rfrag1, dist_to_rfrag2
+        algn1['rfrag_dist_up'], algn1['rfrag_dist_down']    = dist1_up, dist1_down
+        algn2['rfrag_dist_up'], algn2['rfrag_dist_down']    = dist2_up, dist2_down
+
+    else:
+        algn1['rfrag']      = -1
+        algn1['rfrag_dist'] = -1
+        algn1['rfrag_dist_up']  = -1
+        algn1['rfrag_dist_down']    = -1
+        algn2['rfrag']      = -1
+        algn2['rfrag_dist'] = -1
+        algn2['rfrag_dist_up']  = -1
+        algn2['rfrag_dist_down']    = -1
+
+    #print(algn1, algn2)
+    return (algn1, algn2)
 
 def rescue_junctions(algns1_orig, algns2_orig, rfrags):
     """
@@ -931,25 +995,16 @@ def rescue_junctions(algns1_orig, algns2_orig, rfrags):
     algns1 = copy.deepcopy(algns1_orig)
     algns2 = copy.deepcopy(algns2_orig)
 
-    def find_rfrag(rfrags, chrom, pos):
-        if chrom.encode('ascii') in rfrags.keys():
-            rsites_chrom = rfrags[chrom.encode('ascii')]['end']
-            rsites_idx = rfrags[chrom.encode('ascii')]['idx']
-            idx = min(max(0, rsites_chrom.searchsorted(pos, 'right') - 1), len(rsites_chrom) - 2)
-            return rsites_idx[idx], rsites_chrom[idx], rsites_chrom[idx + 1]
-        else:
-            return -1, -1, -1
-
     n_algns1 = len(algns1)
     n_algns2 = len(algns2)
 
     #print(n_algns1, n_algns2)
     # If both sides have more that two alignments, we expect too short alignements,
     # but this might be improved with sequencing length
-    if (n_algns1 > 2) or (n_algns2 > 2):
+    if (n_algns1 > 2) and (n_algns2 > 2):
         return (0, algns1_orig, algns2_orig)
     # If both sides have one alignment or none, we drop it, no ligation through rsite observed
-    if (n_algns1 < 1) or (n_algns2 < 1):
+    if (n_algns1 < 1) and (n_algns2 < 1):
         return (0, algns1_orig, algns2_orig)
 
     resulting_algns1 = []
@@ -957,108 +1012,34 @@ def rescue_junctions(algns1_orig, algns2_orig, rfrags):
     chim3_R1 = None
     chim3_R2 = None
 
+    PAIR_PRESENT = 1
+
     if n_algns1==2:
-
-        if (algns1[1]['is_mapped'] and algns1[1]['is_unique']):
-            chim3_R1 = algns1[1]
-
-        if (algns1[0]['is_mapped'] and algns1[0]['is_unique'] and algns1[1]['is_mapped'] and algns1[1]['is_unique']):
-
-            rfrag1, dist1_5, dist1_3 = \
-                find_rfrag(rfrags, algns1[0]['chrom'], algns1[0]['pos3'] + (-10 if algns1[0]['strand'] == "+" else 10))
-            rfrag2, dist2_5, dist2_3 = \
-                find_rfrag(rfrags, algns1[1]['chrom'], algns1[1]['pos5'] + (10 if algns1[1]['strand'] == "+" else -10))
-
-            #print(rfrags.keys(), algns1[0]['chrom'], rfrag1, dist1_5, dist1_3, algns1[0]['pos3'], algns1[0]['pos5'])
-            dist_to_rfrag1 = min( abs(dist1_5-algns1[0]['pos3']) ,
-                                  abs(dist1_3-algns1[0]['pos3']) )
-            dist_to_rfrag2 = min( abs(dist2_5-algns1[1]['pos5']) ,
-                                  abs(dist2_3-algns1[1]['pos5']) )
-            if dist_to_rfrag1>10 or dist_to_rfrag2>10:
-                algns1[0]['type'] = 'H' # hop
-                algns1[1]['type'] = 'H'
-            else:
-                algns1[0]['type'] = 'J' # junction
-                algns1[1]['type'] = 'J'
-
-            algns1[0]['rfrag'] = rfrag1
-            algns1[1]['rfrag'] = rfrag2
-            algns1[0]['rfrag_dist'] = dist_to_rfrag1
-            algns1[1]['rfrag_dist'] = dist_to_rfrag2
-            algns1[0]['rfrag_dist_5'] = dist1_5
-            algns1[0]['rfrag_dist_3'] = dist1_3
-            algns1[1]['rfrag_dist_5'] = dist2_5
-            algns1[1]['rfrag_dist_3'] = dist2_3
-
-            resulting_algns1.append(dict(algns1[0])) # Add more sophisticated criteria?
-            resulting_algns2.append(dict(algns1[1]))
-
+        for_pair1 = algns1[1]
+        algn1, algn2 = rescue_pair(algns1[0], algns1[1], "J", rfrags=rfrags, gap_limit=0, dist_rsite=10)
+        resulting_algns1.append(copy.deepcopy(algn1))
+        resulting_algns2.append(copy.deepcopy(algn2))
+    elif n_algns1==1:
+        for_pair1 = algns1[0]
     else:
-        if (algns1[0]['is_mapped'] and algns1[0]['is_unique']):
-            chim3_R1 = algns1[0]
+        # no pair
+        PAIR_PRESENT=0
 
-    if n_algns2==2:
-        if (algns2[1]['is_mapped'] and algns2[1]['is_unique']):
-            chim3_R2 = algns2[1]
-
-        if (algns2[0]['is_mapped'] and algns2[0]['is_unique'] and algns2[1]['is_mapped'] and algns2[1]['is_unique']):
-
-            rfrag1, dist1_5, dist1_3 = \
-                find_rfrag(rfrags, algns2[0]['chrom'], algns2[0]['pos3'] + (-10 if algns2[0]['strand'] == "+" else 10))
-            rfrag2, dist2_5, dist2_3 = \
-                find_rfrag(rfrags, algns2[1]['chrom'], algns2[1]['pos5'] + (10 if algns2[1]['strand'] == "+" else -10))
-
-            dist_to_rfrag1 = min( abs(dist1_5-algns2[0]['pos3']) ,
-                                  abs(dist1_3-algns2[0]['pos3']) )
-            dist_to_rfrag2 = min( abs(dist2_5-algns2[1]['pos5']) ,
-                                  abs(dist2_3-algns2[1]['pos5']) )
-            if dist_to_rfrag1>10 or dist_to_rfrag2>10:
-                algns2[0]['type'] = 'H' # hop junction
-                algns2[1]['type'] = 'H'
-            else:
-                algns2[0]['type'] = 'J' # rsite junction
-                algns2[1]['type'] = 'J'
-
-            algns2[0]['rfrag'] = rfrag1
-            algns2[1]['rfrag'] = rfrag2
-            algns2[0]['rfrag_dist'] = dist_to_rfrag1
-            algns2[1]['rfrag_dist'] = dist_to_rfrag2
-            algns2[0]['rfrag_dist_5'] = dist1_5
-            algns2[0]['rfrag_dist_3'] = dist1_3
-            algns2[1]['rfrag_dist_5'] = dist2_5
-            algns2[1]['rfrag_dist_3'] = dist2_3
-
-            resulting_algns1.append(dict(algns2[0])) # Add more sophisticated criteria?
-            resulting_algns2.append(dict(algns2[1]))
-
+    if n_algns2 == 2:
+        for_pair2 = algns2[1]
+        algn1, algn2 = rescue_pair(algns2[0], algns2[1], "J", rfrags=rfrags, gap_limit=0, dist_rsite=10)
+        resulting_algns1.append(copy.deepcopy(algn1))
+        resulting_algns2.append(copy.deepcopy(algn2))
+    elif n_algns2 == 1:
+        for_pair2 = algns2[0]
     else:
-        if (algns2[0]['is_mapped'] and algns2[0]['is_unique']):
-            chim3_R2 = algns2[0]
+        # no pair
+        PAIR_PRESENT=0
 
-    if chim3_R1 and chim3_R2:
-        ADD=1
-        rfrag1, dist1_5, dist1_3 = \
-            find_rfrag(rfrags, chim3_R1['chrom'], chim3_R1['pos3'] + (-10 if chim3_R1['strand'] == "+" else 10))
-        rfrag2, dist2_5, dist2_3 = \
-            find_rfrag(rfrags, chim3_R2['chrom'], chim3_R2['pos3'] + (-10 if chim3_R2['strand'] == "+" else 10))
-        if (abs(rfrag1-rfrag2)<2) and (chim3_R1['chrom']==chim3_R2['chrom']):
-            ADD=0
-
-        if ADD:
-            chim3_R1['type'] = 'P' # sequencing pair, not supported by any junction
-            chim3_R2['type'] = 'P'
-
-            chim3_R1['rfrag'] = rfrag1
-            chim3_R2['rfrag'] = rfrag2
-            chim3_R1['rfrag_dist'] = -1
-            chim3_R2['rfrag_dist'] = -1
-            chim3_R1['rfrag_dist_5'] = -1
-            chim3_R1['rfrag_dist_3'] = -1
-            chim3_R2['rfrag_dist_5'] = -1
-            chim3_R2['rfrag_dist_3'] = -1
-
-            resulting_algns1.append(dict(chim3_R1))  # Add more sophisticated criteria?
-            resulting_algns2.append(dict(chim3_R2))
+    if PAIR_PRESENT:
+        algn1, algn2 = rescue_pair(for_pair1, for_pair2, "P", rfrags=rfrags, gap_limit=0, dist_rsite=0)
+        resulting_algns1.append(copy.deepcopy(algn1))
+        resulting_algns2.append(copy.deepcopy(algn2))
 
     if len(resulting_algns1)>0:
         algns1_orig = copy.deepcopy(resulting_algns1)
