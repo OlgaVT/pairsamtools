@@ -26,11 +26,20 @@ CONTEXT_SETTINGS = {
 @click.version_option(version=__version__)
 @click.group(context_settings=CONTEXT_SETTINGS)
 @click.option(
-    '-pm', '--post-mortem', 
+    '--post-mortem', 
     help="Post mortem debugging", 
     is_flag=True,
-    default=False)
-def cli(post_mortem):
+    default=False
+)
+
+@click.option(
+    '--output-profile', 
+    help="Profile performance with Python cProfile and dump the statistics "
+         "into a binary file", 
+    type=str,
+    default=''
+)
+def cli(post_mortem, output_profile):
     if post_mortem:
         import traceback
         try:
@@ -42,6 +51,19 @@ def cli(post_mortem):
             print()
             pdb.pm()
         sys.excepthook = _excepthook
+
+    if output_profile:
+        import cProfile 
+        import atexit
+        
+        pr = cProfile.Profile()
+        pr.enable()
+
+        def _atexit_profile_hook():
+            pr.disable()
+            pr.dump_stats(output_profile)
+
+        atexit.register(_atexit_profile_hook)
 
 
 def common_io_options(func):
@@ -79,6 +101,7 @@ def common_io_options(func):
              'Must read input from stdin and print output into stdout. '
              'EXAMPLE: pbgzip -c -n 8'
         )
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
@@ -91,6 +114,7 @@ from .pairsam_markasdup import markasdup
 from .pairsam_select import select
 from .pairsam_split import split
 from .pairsam_restrict import restrict
+from .pairsam_phase import phase
 from .pairsam_parse import parse, parse_cigar, parse_algn
 from .pairsam_hdf2pairsam import hdf2pairsam
 from .pairsam_stats import stats

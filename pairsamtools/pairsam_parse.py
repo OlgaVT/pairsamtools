@@ -9,7 +9,7 @@ import pipes
 import sys
 import os
 import io
-import copy
+import copy 
 
 from . import _fileio, _pairsam_format, _headerops, cli, common_io_options
 from .pairsam_stats import PairCounter
@@ -31,7 +31,8 @@ EXTRA_COLUMNS = [
     'rfrag',
     'rfrag_dist',
     'rfrag_dist_up',
-    'rfrag_dist_down'
+    'rfrag_dist_down',
+    'seq'
 ]
 
 @cli.command()
@@ -89,7 +90,8 @@ EXTRA_COLUMNS = [
     default='',
     help='Report extra columns describing alignments '
          'Possible values (can take multiple values as a comma-separated '
-         'list): {}.'.format(', '.join(EXTRA_COLUMNS)))
+         'list): a SAM tag (any pair of uppercase letters) or {}.'.format(
+             ', '.join(EXTRA_COLUMNS)))
 @click.option(
     "--output-parsed-alignments", 
     type=str, 
@@ -176,8 +178,9 @@ def parse_py(sam_path, chroms_path, output, assembly, min_mapq, max_molecule_siz
                                command=kwargs.get('cmd_out', None)) 
                  if output_stats else None)
 
+    print("Parsing")
     if out_alignments_stream:
-        out_alignments_stream.write('side\tchrom\tpos\tstrand\tmapq\tcigar\tdist_5_lo\tdist_5_hi\tmatched_bp\n')
+        out_alignments_stream.write('readID\tside\tchrom\tpos\tstrand\tmapq\tcigar\tdist_5_lo\tdist_5_hi\tmatched_bp\n')
 
     # generate empty PairCounter if stats output is requested:
     out_stat = PairCounter() if output_stats else None
@@ -190,7 +193,7 @@ def parse_py(sam_path, chroms_path, output, assembly, min_mapq, max_molecule_siz
 
     add_columns = [col for col in add_columns.split(',') if col]
     for col in add_columns:
-        if col not in EXTRA_COLUMNS:
+        if not( (col in EXTRA_COLUMNS) or (len(col) == 2 and col.isupper())):
             raise Exception('{} is not a valid extra column'.format(col))
 
     columns =  (_pairsam_format.COLUMNS 
@@ -298,7 +301,13 @@ def empty_alignment():
         'type':'N'
     }
 
-def parse_algn(samcols, min_mapq, report_3_alignment_end=False):
+def parse_algn(
+        samcols, 
+        min_mapq, 
+        report_3_alignment_end=False, 
+        sam_tags=None,
+        store_seq=False):
+    
     is_mapped = (int(samcols[1]) & 0x04) == 0
     mapq = int(samcols[4])
     is_unique = (mapq >= min_mapq)
@@ -320,9 +329,9 @@ def parse_algn(samcols, min_mapq, report_3_alignment_end=False):
             chrom = samcols[2]
             if strand == '+':
                 pos5 = int(samcols[3])
-                pos3 = int(samcols[3]) + cigar['algn_ref_span']
+                pos3 = int(samcols[3]) + cigar['algn_ref_span'] - 1
             else:
-                pos5 = int(samcols[3]) + cigar['algn_ref_span']
+                pos5 = int(samcols[3]) + cigar['algn_ref_span'] - 1
                 pos3 = int(samcols[3])
         else:
             chrom = _pairsam_format.UNMAPPED_CHROM
@@ -355,6 +364,19 @@ def parse_algn(samcols, min_mapq, report_3_alignment_end=False):
     algn.update(cigar)
 
     algn['pos'] = algn['pos3'] if report_3_alignment_end else algn['pos5']
+
+    if sam_tags:
+        for tag in sam_tags:
+            algn[tag] = ''
+            
+        for col in samcols[11:]:
+            for tag in sam_tags:
+                if col.startswith(tag+':'):
+                    algn[tag] = col[5:]
+                    continue
+
+    if store_seq:
+        algn['seq'] = samcols[9]  
 
     return algn
 
@@ -511,6 +533,8 @@ def parse_sams_into_pair(sams1,
                          max_inter_align_gap,
                          walks_policy,
                          report_3_alignment_end,
+                         sam_tags,
+                         store_seq,
                          rfrags):
     """
     Parse sam entries corresponding to a Hi-C molecule into alignments
@@ -527,9 +551,11 @@ def parse_sams_into_pair(sams1,
     """
 
     # Generate a sorted, gap-filled list of all alignments
-    algns1 = [parse_algn(sam.rstrip().split('\t'), min_mapq, report_3_alignment_end)
+    algns1 = [parse_algn(sam.rstrip().split('\t'), min_mapq, 
+                         report_3_alignment_end, sam_tags, store_seq)
               for sam in sams1]
-    algns2 = [parse_algn(sam.rstrip().split('\t'), min_mapq, report_3_alignment_end)
+    algns2 = [parse_algn(sam.rstrip().split('\t'), min_mapq, 
+                         report_3_alignment_end, sam_tags, store_seq)
               for sam in sams2]
     algns1 = sorted(algns1, key=lambda algn: algn['dist_to_5'])
     algns2 = sorted(algns2, key=lambda algn: algn['dist_to_5'])
@@ -561,8 +587,8 @@ def parse_sams_into_pair(sams1,
                 pass
 
             if is_chimeric_1 or is_chimeric_2:
-                hic_algn1 = _mask_alignment(copy.deepcopy(hic_algn1))
-                hic_algn2 = _mask_alignment(copy.deepcopy(hic_algn2))
+                hic_algn1 = _mask_alignment(dict(hic_algn1))
+                hic_algn2 = _mask_alignment(dict(hic_algn2))
                 #hic_algn1['type'] = hic_algn1['type'].lower()
                 #hic_algn2['type'] = hic_algn2['type'].lower()
                 hic_algn1['type'] = 'W'
@@ -663,10 +689,13 @@ def push_sam(line, drop_seq, sams1, sams2):
     return
 
 
-def write_all_algnments(all_algns1, all_algns2, out_file):
+def write_all_algnments(read_id, all_algns1, all_algns2, out_file):
+    #def write_all_algnments(all_algns1, all_algns2, out_file):
     if len(all_algns1)<1:
         return
     for side_idx, all_algns in enumerate((all_algns1, all_algns2)):
+        out_file.write(read_id)
+        out_file.write('\t')
         out_file.write(str(side_idx+1))
         out_file.write('\t')
         for algn in sorted(all_algns, key=lambda x: x['dist_to_5']):
@@ -699,51 +728,33 @@ def write_pairsam(
     Thus, use the vertical tab character to separate fields!
 
     """
-    if drop_readid:
-        out_file.write('.')
-    else:
-        out_file.write(read_id)
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(algn1['chrom'])
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(str(algn1['pos']))
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(algn2['chrom'])
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(str(algn2['pos']))
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(algn1['strand'])
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(algn2['strand'])
-    out_file.write(_pairsam_format.PAIRSAM_SEP)
-    out_file.write(algn1['type'] + algn2['type'])
+    cols = [
+        '.' if drop_readid else read_id,
+        algn1['chrom'],
+        str(algn1['pos']),
+        algn2['chrom'],
+        str(algn2['pos']),
+        algn1['strand'],
+        algn2['strand'],
+        algn1['type'] + algn2['type']
+    ]
 
     if not drop_sam:
-        out_file.write(_pairsam_format.PAIRSAM_SEP)
-        for i, sam in enumerate(sams1):
-            out_file.write(sam.replace('\t', _pairsam_format.SAM_SEP))
-            out_file.write(_pairsam_format.SAM_SEP + 'Yt:Z:')
-            out_file.write(algn1['type'] + algn2['type'])
-            if i < len(sams1) -1:
-                out_file.write(_pairsam_format.INTER_SAM_SEP)
+        for sams in [sams1, sams2]:
+            cols.append(
+                _pairsam_format.INTER_SAM_SEP.join([
+                    (sam.replace('\t', _pairsam_format.SAM_SEP)
+                    + _pairsam_format.SAM_SEP 
+                    + 'Yt:Z:' + algn1['type'] + algn2['type'])
+                for sam in sams
+                ])
+            )
 
-        out_file.write(_pairsam_format.PAIRSAM_SEP)
-        for i, sam in enumerate(sams2):
-            out_file.write(sam.replace('\t', _pairsam_format.SAM_SEP))
-            out_file.write(_pairsam_format.SAM_SEP + 'Yt:Z:')
-            out_file.write(algn1['type'] + algn2['type'])
-            if i < len(sams2) -1:
-                out_file.write(_pairsam_format.INTER_SAM_SEP)
-
-    
     for col in add_columns:
-        #print(col)
-        out_file.write(_pairsam_format.PAIRSAM_SEP)
-        out_file.write(str(algn1[col]))
-        out_file.write(_pairsam_format.PAIRSAM_SEP)
-        out_file.write(str(algn2[col]))
-
-    out_file.write('\n')
+        cols.append(str(algn1[col]))
+        cols.append(str(algn2[col]))
+        
+    out_file.write(_pairsam_format.PAIRSAM_SEP.join(cols) + '\n' )
 
 
 def streaming_classify(instream, outstream, chromosomes, min_mapq, max_molecule_size, 
@@ -754,6 +765,7 @@ def streaming_classify(instream, outstream, chromosomes, min_mapq, max_molecule_
     """
     chrom_enum = dict(zip([_pairsam_format.UNMAPPED_CHROM] + list(chromosomes), 
                           range(len(chromosomes)+1)))
+    sam_tags = [col for col in add_columns if len(col)==2 and col.isupper()]
     prev_read_id = ''
     sams1 = []
     sams2 = []
@@ -782,6 +794,8 @@ def streaming_classify(instream, outstream, chromosomes, min_mapq, max_molecule_
 
         print('Rfrags read')
     
+    store_seq = ('seq' in add_columns)
+    
     instream = iter(instream)
     while line is not None:
         line = next(instream, None)
@@ -798,16 +812,18 @@ def streaming_classify(instream, outstream, chromosomes, min_mapq, max_molecule_
                 kwargs['max_inter_align_gap'],
                 kwargs['walks_policy'],
                 kwargs['report_alignment_end']=='3',
+                sam_tags,
+                store_seq,
                 rfrags
                 ):
 
-                #print('1', algn1['type'], algn2['type'])
                 flip_pair = not check_pair_order(algn1, algn2, chrom_enum)
 
                 if flip_pair:
+                    algn1['strand'] = '+' if algn1['strand']=='-' else '-'
+                    algn2['strand'] = '+' if algn2['strand']=='-' else '-'
                     algn1, algn2 = algn2, algn1
                     sams1, sams2 = sams2, sams1
-                #print('2', algn1['type'], algn2['type'])
 
                 write_pairsam(
                     algn1, algn2,
@@ -1009,8 +1025,6 @@ def rescue_junctions(algns1_orig, algns2_orig, rfrags):
 
     resulting_algns1 = []
     resulting_algns2 = []
-    chim3_R1 = None
-    chim3_R2 = None
 
     PAIR_PRESENT = 1
 
