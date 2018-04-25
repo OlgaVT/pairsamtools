@@ -20,6 +20,9 @@ print(mask, cell, out_pairix, out_cool_mask)
 filelist = glob.glob(mask)
 exp_list = [x.split('/')[-1].split('.')[0] for x in filelist]
 
+print(filelist)
+print(exp_list)
+
 df = read_pairsams(filelist, exp_list, cell)
 
 df_filtered, stats = filter_pair_df(df)
