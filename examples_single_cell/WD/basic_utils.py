@@ -512,7 +512,7 @@ def get_scalings_df(files, labels, merged_file=None, chromosomes='all', scaleTyp
 
 import lavaburst
 
-def produce_segmentation(mtx, gamma, good_bins='default', method='modularity', max_intertad_size=3):
+def produce_segmentation(mtx, gamma, good_bins='default', method='modularity', max_intertad_size=3, max_tad_size=10000):
     """
     Produces single segmentation (TADs or CDs calling) of mtx with one gamma with the algorithm provided.
     :param mtx: input numpy matrix
@@ -545,7 +545,9 @@ def produce_segmentation(mtx, gamma, good_bins='default', method='modularity', m
     segments = model.optimal_segmentation()
     
     v = segments[:,1]-segments[:,0]
-    segments = segments[v>max_intertad_size]
+    mask = (v>max_intertad_size) & (np.isfinite(v)) & (v<max_tad_size)
+
+    segments = segments[mask]
     
     return segments
 
@@ -554,7 +556,10 @@ def find_optimal_gamma(mtx, optimum_nbins,
                        gammas=[1.5, 2.0, 3.0, 4.0, 6.0, 10.0, 12.0, 14.0, 15.0, 20.0], 
                        good_bins='default', 
                        method='modularity', 
-                       max_intertad_size=3):
+                       max_intertad_size=3, 
+                       max_tad_size=10000,
+                       optimization_function=np.median, 
+                       min_tads_number=10):
     """
     Finds optimal gamma that produces the closest segments size to what is expected.
     :param mtx: input numpy matrix
@@ -572,20 +577,70 @@ def find_optimal_gamma(mtx, optimum_nbins,
     means = []
     
     for n, gamma in enumerate(gammas):
-        segments = produce_segmentation(mtx, gamma, good_bins=good_bins, method=method, max_intertad_size=max_intertad_size)
+        segments = produce_segmentation(mtx, gamma, good_bins=good_bins, method=method, max_intertad_size=max_intertad_size, max_tad_size=max_tad_size)
         
         v = segments[:,1]-segments[:,0]
+        if len(v)<min_tads_number:
+            means.append(0)
+            continue
 
-        means.append(np.nanmean(v))
+        means.append(optimization_function(v))
         
-        if np.abs(np.array(np.nanmean(v)-optimum_nbins))<epsilon:
+        if np.abs(np.array(optimization_function(v)-optimum_nbins))<epsilon:
             break
             
+    if len(means)==0:
+      logging.error("TADs calling run with bad parameters set: empty means array!")
+
     idx = np.argmin(np.abs(np.array(means)-optimum_nbins))
     opt_mean, opt_gamma = means[idx], gammas[idx]
         
     return opt_mean, opt_gamma
 
+def find_optimal_gamma_2opt(mtx, optimum_nbins,  
+                       gammas=[1.5, 2.0, 3.0, 4.0, 6.0, 10.0, 12.0, 14.0, 15.0, 20.0], 
+                       good_bins='default', 
+                       method='modularity', 
+                       max_intertad_size=3, 
+                       max_tad_size=10000,
+                       optimization_function=np.median):
+    """
+    Finds optimal gamma that produces the closest segments size to what is expected, but with two optimization steps.
+    First, optimization_function for all segmentations is minimized. Second, over all best cases the segmentation with 
+    largest number of TADs is selected. 
+    
+    The reasoning behind this implementation is that we want not only to obtain segmentation with the best medium or 
+    mean size of TADs, but also get the best coverage of chromosome with TADs. 
+    
+    :param mtx: input numpy matrix
+    :param optimum_nbins: expected size of TADs/CCs/segments
+    :param gammas: list of gammas to probe the segmentation calling
+    :param good_bins: bool vector with length of len(mtx) with False corresponding to masked bins, 'default' is that
+        good bins are all columns/rows with sum > 0
+    :param method: 'modularity' (default) or 'armatus'
+    :param max_intertad_size: max size of segmentation unit that is considered as interTAD
+    :return: the best approximated mean segments size and optimal gamma for this segmentation
+    """
+
+    means = []
+    ntads = []
+
+    for n, gamma in enumerate(gammas):
+        segments = produce_segmentation(mtx, gamma, 
+                                        good_bins='default', method=method, 
+                                        max_intertad_size=max_intertad_size, max_tad_size=max_tad_size)
+
+        v = segments[:,1]-segments[:,0]
+
+        means.append(optimization_function(v))
+        ntads.append(len(v))
+        
+    diff = np.abs(np.array(means)-optimum_nbins)
+    idxs = np.where( np.abs(diff-min(diff))<0.0001)[0]
+    idx = idxs[ np.argmax(np.array(ntads)[idxs]) ]
+    opt_mean, opt_gamma, opt_ntads = means[idx], gammas[idx], ntads[idx]
+        
+    return opt_mean, opt_gamma, opt_ntads
 
 def segmentations_to_bed(by_chr_dct, outfile, resolution):
     """
