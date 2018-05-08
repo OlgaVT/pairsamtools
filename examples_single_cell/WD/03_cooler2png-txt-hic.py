@@ -50,32 +50,39 @@ for cool in coolers:
     else:
         exp = cell
         
-    # if exp==cell or 'merged' in cool or 'Dros' in cool:
-    #     for chrom in chromosomes:
-    #        outfile = os.path.join(DIR_TXT, '{}.{}.{}.{}.txt'.format('mtx', cell, res, chrom))
-    #        cooler2txt_chr(cool, outfile, fmt='mtx', chromosome=chrom)
-    #        outfile = os.path.join(DIR_TXT, '{}.{}.{}.{}.txt'.format('sparse_bins', cell, res, chrom))
-    #        cooler2txt_chr(cool, outfile, fmt='sparse_bins', chromosome=chrom)
-    #
-    #
-    # if res=='10' or res=='100' or res=='20' or res=='10000' or res=='20000' or res=='100000':
-    #     for chrom in chromosomes:
-    #         outfile = os.path.join(DIR_IMG, '{}.{}.{}.{}.png'.format(cell, exp, res, chrom))
-    #         if 'Dros' in cool or 'merged' in cool:
-    #           cmap='jet'
-    #           balance=False
-    #           if 'Dros' in cool:
-    #             balance=True
-    #             scale='log'
-    #           remove_diagonal=True
-    #           scale='linear'
-    #         else:
-    #           balance=False
-    #           remove_diagonal=False
-    #           scale='linear'
-    #         cooler2png_chr(cool, outfile, cmap=cmap, chromosome=chrom, remove_diagonal=remove_diagonal, balance=balance, scale=scale)
+    if 'Dros' in cool:
+        for chrom in chromosomes:
+           outfile = os.path.join(DIR_TXT, '{}.{}.{}.{}.balanced.txt'.format('mtx', cell, res, chrom))
+           cooler2txt_chr(cool, outfile, fmt='mtx', chromosome=chrom, balance=True)
+           outfile = os.path.join(DIR_TXT, '{}.{}.{}.{}.balanced.txt'.format('sparse_bins', cell, res, chrom))
+           cooler2txt_chr(cool, outfile, fmt='sparse_bins', chromosome=chrom, balance=True)
+    
+    #if exp==cell or 'merged' in cool or 'Dros' in cool:
+    #    for chrom in chromosomes:
+    #       outfile = os.path.join(DIR_TXT, '{}.{}.{}.{}.txt'.format('mtx', cell, res, chrom))
+    #       cooler2txt_chr(cool, outfile, fmt='mtx', chromosome=chrom)
+    #       outfile = os.path.join(DIR_TXT, '{}.{}.{}.{}.txt'.format('sparse_bins', cell, res, chrom))
+    #       cooler2txt_chr(cool, outfile, fmt='sparse_bins', chromosome=chrom)
+    
+    
+    #if res=='10' or res=='100' or res=='20':
+    #    for chrom in chromosomes:
+    #        outfile = os.path.join(DIR_IMG, '{}.{}.{}.{}.png'.format(cell, exp, res, chrom))
+    #        if 'Dros' in cool or 'merged' in cool:
+    #          cmap='jet'
+    #          balance=False
+    #          if 'Dros' in cool:
+    #            balance=True
+    #            scale='log'
+    #          remove_diagonal=True
+    #          scale='linear'
+    #        else:
+    #          balance=False
+    #          remove_diagonal=False
+    #          scale='linear'
+    #        cooler2png_chr(cool, outfile, cmap=cmap, chromosome=chrom, remove_diagonal=remove_diagonal, balance=balance, scale=scale)
 
-
-    cooler2hic(cool, os.path.join(DIR_HIC, '{}.{}.{}.hic'.format(cell, exp, res) ), 
-               genome='dm3', resolutions=[10000,20000,100000, 1000000],
-               remove_intermediary_files=True, juicer_path="~/soft/juicer/juicer_tools.1.8.9_jcuda.0.8.jar")
+    #if res=='1':
+    #  cooler2hic(cool, os.path.join(DIR_HIC, '{}.{}.{}.hic'.format(cell, exp, res) ), 
+    #           genome='dm3', resolutions=[1000, 10000, 20000, 100000, 1000000],
+    #           remove_intermediary_files=True, juicer_path="juicer_tools.1.8.9_jcuda.0.8.jar")

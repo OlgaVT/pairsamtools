@@ -61,32 +61,15 @@ do
   echo $pref $file1 $file2
   #bwa mem -t 4 -v 3 -SP ${GENOMEDIR}/${GENOME}.fa.gz ${INDIR}/$file2 ${INDIR}/$file1 | samtools view -bS > ${BAMDIR}/${pref}.bam
 
-  #pairsamtools parse ${BAMDIR}/${pref}.bam -c $GENOMEDIR/${GENOME}.reduced.chrom.sizes --output ${PAIRDIR}/${pref}.pairsam -f $GENOMEDIR/rfrags_${GENOME}_DpnII.txt --walks-policy ligation_junctions --drop-sam --add-columns rfrag --output-stats ${STATSDIR}/${pref}.txt
+  ##pairsamtools parse ${BAMDIR}/${pref}.bam -c $GENOMEDIR/${GENOME}.reduced.chrom.sizes --output ${PAIRDIR}/${pref}.pairsam -f $GENOMEDIR/rfrags_${GENOME}_DpnII.txt --walks-policy ligation_junctions --drop-sam --add-columns rfrag --output-stats ${STATSDIR}/${pref}.txt
 
   if [[ $pref =~ 'Dros' ]]
   then
     #pairsamtools parse ${BAMDIR}/${pref}.bam -c $GENOMEDIR/${GENOME}.reduced.chrom.sizes --output ${PAIRDIR}/${pref}.pairsam.full -f $GENOMEDIR/rfrags_${GENOME}_DpnII.txt --walks-policy mask --drop-sam --output-stats ${STATSDIR}/${pref}.txt.full
 
-    #pairsamtools dedup \
-    #    --max-mismatch 1 \
-    #    --mark-dups \
-    #    --output ${PAIRDIR}/${pref}.pairsam.full.nodups.gz \
-    #    --output-stats ${STATSDIR}/${pref}.txt.full.dedup \
-    #    ${PAIRDIR}/${pref}.pairsam.full
+    pairsamtools sort --nproc 1 -o ${PAIRDIR}/${pref}.pairsam.full.sorted ${PAIRDIR}/${pref}.pairsam.full
 
-    #cooler csort -c1 2 -c2 4 -p1 3 -p2 5 ${PAIRDIR}/${pref}.pairsam.full.nodups.gz $GENOMEDIR/${GENOME}.reduced.chrom.sizes
-
-    for res in 1000 10000 20000 100000
-    do
-      cooler cload pairix \
-        --nproc 4 \
-        --assembly "dm3" \
-        $GENOMEDIR/${GENOME}.reduced.chrom.sizes:${res} ${PAIRDIR}/${pref}.pairsam.full.nodups.blksrt.gz ${COOLDIR}/${pref}.${res}.cool.full
-
-      cooler balance --nproc 4 ${COOLDIR}/${pref}.${res}.cool.full
-    done
-
-    #pairsamtools restrict ${PAIRDIR}/${pref}.pairsam.full --frags $GENOMEDIR/rfrags_${GENOME}_DpnII.txt --output ${PAIRDIR}/${pref}.pairsam.full.restricted
+    ##pairsamtools restrict ${PAIRDIR}/${pref}.pairsam.full --frags $GENOMEDIR/rfrags_${GENOME}_DpnII.txt --output ${PAIRDIR}/${pref}.pairsam.full.restricted
   fi
 
 done

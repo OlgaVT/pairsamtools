@@ -35,7 +35,8 @@ from datetime import timedelta
 
 import subprocess
 import os
-
+import itertools
+import scipy
 
 ######### Basic utils to run linux commands #########
 
@@ -227,7 +228,7 @@ def hdf2cool(infile, outfile, chrms_sizes, assembly='dm3', correct=True):
     
     return c
         
-def cooler2txt_chr(infile, outfile, fmt='mtx', chromosome='chrX', writing_mode='w', separator=None):
+def cooler2txt_chr(infile, outfile, fmt='mtx', chromosome='chrX', writing_mode='w', separator=None, balance=False):
     """
     Converts .cool to .txt matrix of three various formats (dense or sparse). For one chromosome.
     Writing_mode might be 'a' to append to the file, only for sparse data formats.
@@ -248,13 +249,13 @@ def cooler2txt_chr(infile, outfile, fmt='mtx', chromosome='chrX', writing_mode='
 
     if fmt=='mtx': # dense matrix
         c = cooler.Cooler(infile)
-        mtx = c.matrix(balance=False, as_pixels=False).fetch(chromosome, chromosome)
+        mtx = c.matrix(balance=balance, as_pixels=False).fetch(chromosome, chromosome)
         np.savetxt(outfile, mtx, fmt='%.0f', delimiter=separator)
 
     elif fmt=='sparse_bins': # sparse matrix
         c = cooler.Cooler(infile)
         res = c.binsize
-        mat_df = c.matrix(balance=False, as_pixels=True).fetch(chromosome, chromosome)
+        mat_df = c.matrix(balance=balance, as_pixels=True).fetch(chromosome, chromosome)
         
         # shifting the bin ids so that the numeration is from 0
         chr_number = np.where(np.array(c.chromnames)==chromosome)[0][0]
@@ -677,7 +678,149 @@ def segmentations_to_2Djuice(by_chr_dct, outfile, resolution):
                 line = [k, str(i[0]*resolution),str((i[1])*resolution), k, str(i[0]*resolution),str((i[1])*resolution), "0,0,255", "TAD"]
                 outf.write("\t".join(line) + "\n")
 
+                
+# TADs intersection signicifance calculations
+# TODO annotate
 
+def shuffle_segmentation(segmentation):
+    
+    tads_lens      = segmentation[:,1] - segmentation[:,0]
+    tads_lens_shuf = np.random.permutation(tads_lens)
+
+    intertads_lens      = np.append(0, segmentation[1:,0] - segmentation[:-1,1])
+    intertads_lens_shuf = np.random.permutation(intertads_lens)
+    
+    ends = np.cumsum(intertads_lens_shuf+tads_lens_shuf)
+    starts = ends-tads_lens_shuf
+
+    segmentation_reconstructed = np.array([starts, ends]).T
+    
+    return segmentation_reconstructed
+
+def count_intersecting_boundaries(segmentation1, segmentation2, offset=1, mode='binwise'):
+    
+    v1 = np.unique(segmentation1.ravel())
+    v2 = np.unique(segmentation2.ravel())
+
+    def extend(vect, offset):
+        v = vect.copy()
+        for i in range(offset):
+            v = np.append(v, v+1+i)
+            v = np.append(v, v-1-i)
+        v = np.unique(np.sort(v))
+        v = v[v>0]
+        return v
+
+    if mode=='binwise':
+
+        v1 = extend(v1, offset)
+        v2 = extend(v2, offset)
+        observed = {}
+        observed['intersection'], observed['union'], observed['len1'], observed['len2'], observed['jaccard'] = \
+        len(np.intersect1d(v1, v2)), len(np.union1d(v1, v2)), len(v1), len(v2), len(np.intersect1d(v1, v2))/len(np.union1d(v1, v2))
+    
+    elif mode=='boundarywise':
+        
+        v1_ext = extend(v1, offset)
+        v2_ext = extend(v2, offset)
+        
+        #print(np.sum(np.in1d(v1, v2_ext)), np.sum(np.in1d(v2, v1_ext)))
+        intersection = np.mean([np.sum(np.in1d(v1, v2_ext)), np.sum(np.in1d(v2, v1_ext))])
+        union = intersection + np.sum(np.logical_not(np.in1d(v1, v2_ext))) + np.sum(np.logical_not(np.in1d(v2, v1_ext)))
+
+        observed = {}
+        observed['intersection'], observed['union'], observed['len1'], observed['len2'], observed['jaccard'] = \
+        intersection, union, len(v1), len(v2), intersection/union
+
+    elif mode=='endwise':
+        
+        v1 = segmentation1[:,0]
+        v2 = segmentation2[:,0]
+        v1_ext = extend(v1, offset)
+        v2_ext = extend(v2, offset)
+
+        #print(np.sum(np.in1d(v1, v2_ext)), np.sum(np.in1d(v2, v1_ext)))
+        
+        intersection_bgn = np.mean([np.sum(np.in1d(v1, v2_ext)), np.sum(np.in1d(v2, v1_ext))])
+        union_bgn = intersection_bgn + np.sum(np.logical_not(np.in1d(v1, v2_ext))) + np.sum(np.logical_not(np.in1d(v2, v1_ext)))
+        len1_bgn = len(v1)
+        len2_bgn = len(v2)
+
+        v1 = segmentation1[:,1]
+        v2 = segmentation2[:,1]
+        v1_ext = extend(v1, offset)
+        v2_ext = extend(v2, offset)
+        len1_end = len(v1)
+        len2_end = len(v2)  
+        
+        #print(np.sum(np.in1d(v1, v2_ext)), np.sum(np.in1d(v2, v1_ext)))
+        
+        intersection_end = np.mean([np.sum(np.in1d(v1, v2_ext)), np.sum(np.in1d(v2, v1_ext))])
+        union_end = intersection_end + np.sum(np.logical_not(np.in1d(v1, v2_ext))) + np.sum(np.logical_not(np.in1d(v2, v1_ext)))
+
+        intersection = intersection_bgn + intersection_end
+        union = union_bgn + union_end
+        len1 = len1_bgn + len1_end
+        len2 = len2_bgn + len2_end
+        
+        observed = {}
+        observed['intersection'], observed['union'], observed['len1'], observed['len2'], observed['jaccard'] = \
+        intersection, union, len1, len2, intersection/union
+        
+    return observed
+        
+
+def create_background(segmentation1, segmentation2, n_inter=1000, offset=1, mode='endwise'):
+    intersection_distribution = {'intersection':[], 'union':[], 'len1':[], 'len2':[], 'jaccard':[]}
+    for i in range(n_inter):
+        observed = \
+            count_intersecting_boundaries( shuffle_segmentation(segmentation1), shuffle_segmentation(segmentation2), offset=offset, mode=mode)
+        for k in observed.keys():
+            intersection_distribution[k].append(observed[k])
+        
+    for k in intersection_distribution.keys():
+        intersection_distribution[k] = np.sort(intersection_distribution[k])
+        
+    return intersection_distribution
+
+from copy import copy
+
+def compute_tads_similarity(segmentation1_dict, segmentation2_dict, 
+                            chrms=None, n_iter=1000, offset=1, mode='endwise'):
+    if chrms is None:
+        chrms = segmentation1_dict.keys()
+
+    ret = {'values':{}, 'background':{}, 'p-values':{}}
+    
+    for ch in chrms:
+        segmentation1 = segmentation1_dict[ch]
+        segmentation2 = segmentation2_dict[ch]
+        
+        observed = count_intersecting_boundaries( segmentation1,  segmentation2, offset=offset, mode=mode)
+        bg = create_background(segmentation1, segmentation2, n_inter=n_iter, offset=offset, mode=mode)
+        
+        ret['values'][ch] = copy(observed)
+        ret['background'][ch] = copy(bg)
+        ret['p-values'][ch] = {k:(100-scipy.stats.percentileofscore(bg[k], observed[k]))/100 for k in bg.keys()}
+    
+    for k in ['values', 'background', 'p-values']:
+        ret[k]['all'] = {}
+        
+    for k in ret['values']['chrX'].keys():
+        if k=='jaccard':
+            func = np.mean
+        else:
+            func = np.sum
+        ret['values']['all'][k]     = func([ret['values'][ch][k] for ch in chrms])
+        ret['background']['all'][k] = func(np.array([ret['background'][ch][k] for ch in chrms]), axis=0)
+        ret['p-values']['all'][k] = (100-scipy.stats.percentileofscore(ret['background']['all'][k], ret['values']['all'][k]))/100
+        
+    #del ret['background']
+    
+    return ret
+                
+                
+                
 ######### Insulation Score (IS) utilities #########
 
 from cooltools import insulation
